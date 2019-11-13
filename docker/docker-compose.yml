@@ -1,0 +1,16 @@
+version: '2.4'
+services:
+  visualize_synergy:
+    build: .
+    runtime: nvidia
+    environment:
+     - DISPLAY
+     - LOCAL_USER_ID=1000
+     - QT_X11_NO_MITSHM=1
+     - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+     - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    privileged: true
+    network_mode: "host"
+    tty: true
+    container_name: visualize_synergy
