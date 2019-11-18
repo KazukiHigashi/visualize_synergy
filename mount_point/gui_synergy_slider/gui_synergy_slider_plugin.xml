@@ -1,0 +1,15 @@
+<library path="src">
+  <class name="GuiSynergySlider" type="gui_synergy_slider.joint_slider.GuiSynergySlider"
+         base_class_type="rqt_gui_py::Plugin">
+    <description>
+      A plugin to change the position along with a principal component axis of a synergy.
+    </description>
+    <qtgui>
+      <group>
+        <label>Higashi Kazuki</label>
+      </group>
+      <label>Synergy Slider</label>
+      <statustip>A plugin to change the position along with a principal component axis of a synergy.</statustip>
+    </qtgui>
+  </class>
+</library>
