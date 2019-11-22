@@ -72,6 +72,17 @@ class Joint():
             self.max = 900
 
 
+class PrincipalComponent:
+    def __init__(self, num, max, min, vector):
+        self.num = num
+
+        # self.synergy, self.postures = pca_utils.generate_toss_from_directory(pca_resource_path)
+
+        self.min = min
+        self.max = max
+        self.vector = vector
+
+
 class ExtendedSlider(QFrame):
 
     """
@@ -136,6 +147,73 @@ class ExtendedSlider(QFrame):
         else:
             self.pos_slider_tracking_behaviour = False
         self.set_slider_behaviour()
+
+
+class ExtendedSynergySlider(QFrame):
+
+    """
+    This slider displays the current score of the principal component of the synergy and the target as well.
+    """
+
+    def __init__(self, principal_component, uiFile, plugin_parent, parent=None):
+        QFrame.__init__(self, parent)
+        ui_file = os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), uiFile)
+        loadUi(ui_file, self)
+
+        self.state = None
+
+        self.plugin_parent = plugin_parent
+        self.principal_component = principal_component
+        self.current_controller_index = -1
+        self.label.setText(str(principal_component.num))
+        self.current_value = 0
+
+        self.slider.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.slider.setTracking(True)
+        self.pos_slider_tracking_behaviour = True
+        self.is_selected = False
+        self.first_update_done = False
+
+        self.current_controller_index = 0
+        self.slider.setMinimum(principal_component.min)
+        self.slider.setMaximum(principal_component.max)
+        self.min_label.setText(str(principal_component.min))
+        self.max_label.setText(str(principal_component.max))
+
+        self.selected.stateChanged.connect(self.checkbox_click)
+        self.slider.valueChanged.connect(self.changeValue)
+
+        self.timer = Qt.QTimer(self)
+        self.timer.timeout.connect(self.update)
+        self.timer.start(200)
+
+    def changeValue(self, value):
+        self.target.setText("Tgt: " + str(value))
+        self.sendupdate(value)
+
+    def sendupdate(self, value):
+        raise NotImplementedError("Virtual method, please implement.")
+
+    def update(self):
+        raise NotImplementedError("Virtual method, please implement.")
+
+    def refresh(self):
+        raise NotImplementedError("Virtual method, please implement.")
+
+    def checkbox_click(self, value):
+        self.is_selected = value
+
+    def set_slider_behaviour(self):
+        raise NotImplementedError("Virtual method, please implement.")
+
+    def set_new_slider_behaviour(self, tracking):
+        if tracking:
+            self.pos_slider_tracking_behaviour = True
+        else:
+            self.pos_slider_tracking_behaviour = False
+        self.set_slider_behaviour()
+
 
 
 class EtherCATHandSlider(ExtendedSlider):
@@ -297,6 +375,86 @@ class EtherCATHandTrajectorySlider(ExtendedSlider):
         pass
 
 
+class EtherCATHandSynergyTrajectorySlider(ExtendedSynergySlider):
+
+    """
+    Slider for one EtherCAT Hand joint, that uses the trajectory controller interface.
+    """
+
+    def __init__(self, principal_component, uiFile, plugin_parent, parent=None):
+        ExtendedSynergySlider.__init__(self, principal_component, uiFile, plugin_parent, parent=None)
+
+        self.initialize_controller()
+
+    def initialize_controller(self):
+        self.slider.setMinimum(self.principal_component.min)
+        self.slider.setMaximum(self.principal_component.max)
+        self.min_label.setText(str(self.principal_component.min))
+        self.max_label.setText(str(self.principal_component.max))
+
+        # self.pub = self.joint.controller.cmd_publisher
+        self.pub = rospy.Publisher("synergy_score_change/pc{}".format(self.principal_component.num),
+                                   Float64, queue_size=1)
+        self.set_slider_behaviour()
+        #
+        # self.joint.controller.subscribe_status_cb_list.append(self._state_cb)
+
+    def _state_cb(self, msg):
+        # self.state = msg.actual.positions[msg.joint_names.index(self.joint.name)]
+        pass
+
+    def sendupdate(self, value):
+        pub_msg = Float64()
+        pub_msg.data = value
+
+        self.pub.publish(pub_msg)
+
+        # if self.joint.controller.traj_target.joint_names \
+        #         and self.joint.controller.traj_target.points:
+        #
+        #     self.joint.controller.traj_target.points[0].positions[
+        #         self.joint.controller.traj_target.joint_names.index(self.joint.name)] = radians(float(value))
+        #
+        #     self.pub.publish(self.joint.controller.traj_target)
+        pass
+
+    def update(self):
+        try:
+            self.current_value = self.state
+            self.value.setText("Val: " + str(self.current_value))
+
+            if not self.first_update_done:
+                self.slider.setSliderPosition(self.current_value)
+                self.slider.setValue(self.current_value)
+                self.target.setText("Tgt: " + str(self.current_value))
+
+                self.first_update_done = True
+        except:
+            pass
+
+    def refresh(self):
+        """
+        Refresh the current position of the slider with index = self.current_controller_index
+        """
+        self.slider.setSliderPosition(self.current_value)
+        self.slider.setValue(self.current_value)
+        self.target.setText("Tgt: " + str(self.current_value))
+
+    def set_slider_behaviour(self):
+        """
+        Set the behaviour of the slider according to controller type
+        """
+        # if (self.joint.controller.controller_category == "position_trajectory"):
+        #     if self.pos_slider_tracking_behaviour:
+        #         self.slider.setTracking(True)
+        #     else:
+        #         self.slider.setTracking(False)
+        pass
+
+    def on_slider_released(self):
+        pass
+
+
 class SelectionSlider(QFrame):
 
     """
@@ -389,3 +547,4 @@ class EtherCATSelectionSlider(SelectionSlider):
         self.slider.setSliderPosition(50)
         self.current_value = 50
         self.target.setText("Tgt: " + str(50) + "%")
+

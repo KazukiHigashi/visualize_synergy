@@ -35,9 +35,17 @@ from sr_robot_msgs.msg import JointMusclePositionControllerState
 from control_msgs.msg import JointTrajectoryControllerState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from gui_synergy_slider.sliders import JointController, Joint, EtherCATHandSlider
-from gui_synergy_slider.sliders import EtherCATHandTrajectorySlider, EtherCATSelectionSlider
+from std_msgs.msg import Float64
+from sensor_msgs.msg import JointState
+from sr_robot_msgs.msg import sendupdate
+
+from gui_synergy_slider.sliders import JointController, Joint, EtherCATHandSlider, PrincipalComponent
+from gui_synergy_slider.sliders import EtherCATHandTrajectorySlider, EtherCATSelectionSlider, \
+    EtherCATHandSynergyTrajectorySlider
 from sr_utilities.hand_finder import HandFinder
+
+from synergy_utility import pca_utils
+from math import radians, degrees
 
 
 class GuiSynergySlider(Plugin):
@@ -62,11 +70,11 @@ class GuiSynergySlider(Plugin):
         "effort_controllers/GravityCompensatedJointTrajectoryController": ("position_trajectory",
                                                                            JointTrajectoryControllerState)}
 
-    synergy_types={
-       #"synergy name":(index, max_pc_number)
-        0:("grasp", 10),
-        1:("task", 10),
-        2:("sub", 6)}
+    synergy_types = {
+        #  "synergy name":(index, max_pc_number)
+        0: ("grasp", 10),
+        1: ("task", 10),
+        2: ("sub", 6)}
 
     def __init__(self, context):
         super(GuiSynergySlider, self).__init__(context)
@@ -88,6 +96,19 @@ class GuiSynergySlider(Plugin):
         self.sliders = []
         self.selection_slider = None
 
+        self.synergy = []
+        self.current_synergy_type = None
+        self.current_pc_num = 1
+        self.current_pca_object = None
+        self.current_synergy_scores = []
+
+        self.joint_position_controller_pub = dict()
+
+        # to be used for calculating next trajectory reconstructed by the synergy
+        self.synergy_posture_pub = rospy.Publisher('/cyberglove/calibrated/joint_states', JointState, queue_size=1)
+
+        rospy.Subscriber("/srh/sendupdate", sendupdate, self._publish_remapped_postures_cb)
+
         # to be used by trajectory controller sliders
         self.trajectory_state_sub = []
         # self.trajectory_state = []
@@ -107,6 +128,7 @@ class GuiSynergySlider(Plugin):
         self._widget.synergyTypeCombo.addItem("sub")
 
         self.hand_prefix = self._get_hand_prefix()
+        # print self.hand_prefix
 
 
     def _get_hand_prefix(self):
@@ -134,19 +156,19 @@ class GuiSynergySlider(Plugin):
         pass
 
     def on_synergy_combo_index_changed(self):
-        currentSynergy = self._widget.synergyTypeCombo.currentIndex()
+        current_synergy_index = self._widget.synergyTypeCombo.currentIndex()
+        self.current_synergy_type = self.synergy_types[current_synergy_index][0]
         self._widget.pcNumberCombo.clear()
-        for i in range(1, self.synergy_types[currentSynergy][1]+1, 1):
+        for i in range(1, self.synergy_types[current_synergy_index][1]+1, 1):
             self._widget.pcNumberCombo.addItem(str(i))
-        pass
 
     def on_pc_combo_index_changed(self):
+        self.current_pc_num = self._widget.pcNumberCombo.currentIndex()+1
+        self.on_reload_button_cicked_()
         pass
 
     def on_robot_type_changed_(self):
         pass
-
-    def
 
     def on_reload_button_cicked_(self):
         """
@@ -161,11 +183,15 @@ class GuiSynergySlider(Plugin):
 
         self.joints = self._create_joints(controllers)
 
+        self.synergy = self._create_synergy(controllers)
+
         self.delete_old_sliders_()
 
-        self._widget.sliderReleaseCheckBox.setCheckState(Qt.Unchecked)
+        # self._widget.sliderReleaseCheckBox.setCheckState(Qt.Unchecked)
 
-        self.load_new_sliders_()
+        self.load_new_synergy_sliders_()
+        #
+        # self.load_new_sliders_()
 
         self.pause_subscriber = False
 
@@ -206,6 +232,25 @@ class GuiSynergySlider(Plugin):
             self.selection_slider.deleteLater()
             self.selection_slider = None
 
+    def load_new_synergy_sliders_(self):
+        self.sliders = list()
+        for pc in self.synergy:
+            slider = None
+            slider_ui_file = os.path.join(rospkg.RosPack().get_path('gui_synergy_slider'), 'uis', 'Slider.ui')
+
+            try:
+                slider = EtherCATHandSynergyTrajectorySlider(pc, slider_ui_file, self, self._widget.scrollAreaWidgetContents)
+            except Exception, e:
+                print 'baka'
+                rospy.loginfo(e)
+
+            if slider is not None:
+                slider.setMaximumWidth(100)
+                self._widget.horizontalLayout.addWidget(slider)
+                self.sliders.append(slider)
+            else:
+                rospy.logerr("cannot add the slider object {}PC".format(pc.num))
+
     def load_new_sliders_(self):
         """
         Create the new slider widgets
@@ -217,7 +262,6 @@ class GuiSynergySlider(Plugin):
             slider = None
             slider_ui_file = os.path.join(
                 rospkg.RosPack().get_path('gui_synergy_slider'), 'uis', 'Slider.ui')
-
             try:
                 if joint.controller.controller_category == "position_trajectory":
                     slider = EtherCATHandTrajectorySlider(
@@ -268,7 +312,7 @@ class GuiSynergySlider(Plugin):
         Load the description from the param named in the edit as an ET element.
         Sets self._robot_description_xml_root to the element.
         """
-        name = self._widget.robot_description_edit.text()
+        name = "robot_description" # self._widget.robot_description_edit.text()
         self._robot_description_xml_root = None
         try:
             xml = rospy.get_param(name)
@@ -322,10 +366,25 @@ class GuiSynergySlider(Plugin):
         else:
             return self._get_joint_min_max_vel(jname)
 
+    def _create_synergy(self, controllers):
+        principal_components = []
+        pca_resource_path = os.path.join(rospkg.RosPack().get_path('gui_synergy_slider'), 'resource', 'taxonomy')
+        synergy, postures = pca_utils.generate_toss_from_directory(pca_resource_path, joint_num=22)
+        pc_score_range = pca_utils.principal_component_score_range(synergy, postures)
 
-    def _create_synergies(self, controllers):
+        self.synergy_score_change_sub = []
+        self.current_pca_object = synergy
+        self.current_synergy_scores = [0] * self.current_pc_num
 
+        print pc_score_range
+        for pc_num in range(1, self.current_pc_num+1):
+            principal_component = PrincipalComponent(num=pc_num, min=pc_score_range[pc_num][0], max=pc_score_range[pc_num][1], vector=synergy.components_[pc_num])
+            principal_components.append(principal_component)
 
+            self.synergy_score_change_sub.append(rospy.Subscriber("synergy_score_change/pc{}".format(pc_num), Float64,
+                                                                  self._publish_synergy_postures_cb, callback_args=pc_num))
+
+        return principal_components
 
     def _create_joints(self, controllers):
         joints = []
@@ -335,6 +394,8 @@ class GuiSynergySlider(Plugin):
         # self.trajectory_state = []
         self.trajectory_state_slider_cb = []
         self.trajectory_pub = []
+
+        self.joint_position_controller_pub = dict()
 
         for controller in controllers:
             if controller.type == "position_controllers/JointTrajectoryController":
@@ -399,14 +460,22 @@ class GuiSynergySlider(Plugin):
                         rospy.loginfo(
                             "controller category: %s", controller_category)
 
-                        if self._widget.joint_name_filter_edit.text() not in joint_name:
-                            continue
+                        # if self._widget.joint_name_filter_edit.text() not in joint_name:
+                        #     continue
 
                         min, max, vel = self._get_joint_min_max_vel_special(
                             joint_name)
                         joint = Joint(
                             joint_name, min, max, vel, joint_controller)
                         joints.append(joint)
+
+                        if controller_category == "position":
+                            self.joint_position_controller_pub[joint_name] = \
+                                rospy.Publisher(joint.controller.name + "/command",
+                                Float64,
+                                queue_size=1,
+                                latch=True)
+
                 else:
                     rospy.logwarn(
                         "Controller %s of type %s not supported", controller.name, controller_type)
@@ -430,3 +499,26 @@ class GuiSynergySlider(Plugin):
 
             for cb in self.trajectory_state_slider_cb[index]:  # call the callbacks of the sliders in the list
                 cb(msg)
+
+    def _publish_synergy_postures_cb(self, msg, pc_num):
+        self.current_synergy_scores[pc_num-1] = msg.data
+        next_posture = pca_utils.calculate_approximated_posture(mean_posture=self.current_pca_object.mean_,
+                                                                pc_vectors=self.current_pca_object.components_,
+                                                                scores=self.current_synergy_scores)
+        pub_msg = JointState()
+        pub_msg.position = next_posture
+
+        self.synergy_posture_pub.publish(pub_msg)
+
+    def _publish_remapped_postures_cb(self, msg):
+        pub_msg = Float64()
+        for joint in msg.sendupdate_list:
+            pub_msg.data = radians(float(joint.joint_target))
+            self.joint_position_controller_pub["rh_{}".format(joint.joint_name)].publish(pub_msg)
+
+
+
+
+
+
+
