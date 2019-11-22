@@ -1,0 +1,10 @@
+
+mount_point/gui_synergy_slider/\.idea/
+
+mount_point/gui_synergy_slider/venv/
+
+mount_point/gui_synergy_slider/resource/
+
+mount_point/gui_synergy_slider-build/
+
+*.pyc
