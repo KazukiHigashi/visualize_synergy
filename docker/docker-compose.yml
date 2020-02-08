@@ -10,6 +10,7 @@ services:
      - NVIDIA_VISIBLE_DEVICES=all
     volumes:
      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+     - /home/kaz64/study_workspace/visualize_synergy/mount_point:/home/user/projects/shadow_robot/base/src/mount_point
     privileged: true
     network_mode: "host"
     tty: true
