@@ -21,15 +21,57 @@ _TICKS = 14
 _FILE_TYPE = ".png"
 
 _JOINT_NAME = ["T rot.", "T MCP", "T IP", "T abd.", "I MCP", "I PIP", "I DIP", "M MCP", "M PIP", "M DIP", "MI abd.",
-               "R MCP", "R PIP", "R DIP", "RM abd.", "P MCP", "P PIP", "P DIP", "PR abd.", "Palm Arch"]
+               "R MCP", "R PIP", "R DIP", "RM abd.", "P MCP", "P PIP", "P DIP", "PR abd.", "Palm"] #  Arch"]
 _DHAIBA_MODEL = ["CPDummy-Y", "TPP-X", "TDP-X", "TMCP-Z", "IPP-X", "IMP-X", "IDP-X", "MPP-X", "MMP-X", "MDP-X", "IMCP-Z"
     , "RPP-X", "RMP-X", "RDP-X", "RMCP-Z", "PPP-X", "PMP-X", "PDP-X", "PMCP-Z", "PMCP-Y"]
+
+
+def print_synergy_vectors(vectors, selected_joints, pc_num, mean_posture=None):
+    view = ""
+
+    if selected_joints is None:
+        selected_joints = list(range(len(_JOINT_NAME)))
+
+    if mean_posture is not None:
+        # print labels
+        view += "Mean Postures\n"
+        view += " "*9
+        for joint_name in _JOINT_NAME:
+            view += "{:>8},".format(joint_name)
+        view += "\n"
+        view += " "*9
+        # print mean posture
+        j = 0
+        for joint_num in range(len(_JOINT_NAME)):
+            if joint_num in selected_joints:
+                view += "{:>8.2f},".format(mean_posture[j])
+                j += 1
+            else:
+                view += "{:>8},".format("None")
+        view += "\n\n"
+
+    # print labels
+    view += "{:>8},".format("PC num")
+    for joint_name in _JOINT_NAME:
+        view += "{:>8},".format(joint_name)
+    view += "\n"
+
+    for i in range(pc_num):
+        view += "{:>8},".format(str(i+1))
+        j = 0
+        for joint_num in range(len(_JOINT_NAME)):
+            if joint_num in selected_joints:
+                view += "{:>8.2f},".format(vectors[i][j])
+                j += 1
+            else:
+                view += "{:>8},".format("None")
+        view += "\n"
+    return view
 
 
 def generate_motion_along_with_pc_axis(taxonomy_mean, pc_axis, file_name, axis, coeff_range):
     coefficient_list = np.arange(start=coeff_range[0], step=(coeff_range[1] - coeff_range[0]) / 500,
                                  stop=coeff_range[1])
-
     with open(file_name, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(_DHAIBA_MODEL)
@@ -39,7 +81,6 @@ def generate_motion_along_with_pc_axis(taxonomy_mean, pc_axis, file_name, axis, 
 
 def principal_component_score_range(pca_object, pca_resources):
     """
-
     :param pca_object: instance of PCA()
     :param pca_resources: np_array used to form the pca_object
     :return:
@@ -63,6 +104,19 @@ def generate_toss_from_files(filenames=None):
     toss_pca.fit(mixed_motions)
 
     return toss_pca, mixed_motions
+
+
+def generate_subsynergy_from_directory(path="./", pc_num=2, joint_num=20, selected_joints=None):
+    if selected_joints is None:
+        selected_joints = list(range(20))
+
+    raw_postures = utils.parse_any_csv(utils.enum_file_name(path), joint_num=joint_num)
+    selected_joint_postures = [[posture[j_id] for j_id in selected_joints] for posture in raw_postures]
+
+    subsynergy = PCA(n_components=pc_num)
+    subsynergy.fit(selected_joint_postures)
+
+    return subsynergy, selected_joint_postures
 
 
 def generate_toss_from_directory(path="./", pc_num=20, joint_num=20):

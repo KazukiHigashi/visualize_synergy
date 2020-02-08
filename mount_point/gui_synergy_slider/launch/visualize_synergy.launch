@@ -1,0 +1,6 @@
+<launch>
+  <include file="$(find sr_remappers)/launch/remapper_glove.launch"/>
+  <include file="$(find sr_hand)/launch/gazebo/gazebo_hand.launch"/>
+
+  <node pkg="rqt_gui" name="rqt_gui" type="rqt_gui"/>
+</launch>

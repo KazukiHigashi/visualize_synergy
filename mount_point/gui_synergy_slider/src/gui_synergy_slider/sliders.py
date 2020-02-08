@@ -215,7 +215,6 @@ class ExtendedSynergySlider(QFrame):
         self.set_slider_behaviour()
 
 
-
 class EtherCATHandSlider(ExtendedSlider):
 
     """
@@ -375,7 +374,7 @@ class EtherCATHandTrajectorySlider(ExtendedSlider):
         pass
 
 
-class EtherCATHandSynergyTrajectorySlider(ExtendedSynergySlider):
+class EtherCATHandSynergySlider(ExtendedSynergySlider):
 
     """
     Slider for one EtherCAT Hand joint, that uses the trajectory controller interface.
@@ -389,13 +388,15 @@ class EtherCATHandSynergyTrajectorySlider(ExtendedSynergySlider):
     def initialize_controller(self):
         self.slider.setMinimum(self.principal_component.min)
         self.slider.setMaximum(self.principal_component.max)
-        self.min_label.setText(str(self.principal_component.min))
-        self.max_label.setText(str(self.principal_component.max))
+        self.min_label.setText("{:.2f}".format(self.principal_component.min))
+        self.max_label.setText("{:.2f}".format(self.principal_component.max))
 
         # self.pub = self.joint.controller.cmd_publisher
         self.pub = rospy.Publisher("synergy_score_change/pc{}".format(self.principal_component.num),
                                    Float64, queue_size=1)
         self.set_slider_behaviour()
+
+        self.pub.publish(0.0)
         #
         # self.joint.controller.subscribe_status_cb_list.append(self._state_cb)
 
@@ -421,12 +422,12 @@ class EtherCATHandSynergyTrajectorySlider(ExtendedSynergySlider):
     def update(self):
         try:
             self.current_value = self.state
-            self.value.setText("Val: " + str(self.current_value))
+            self.value.setText("Val: {:.2f}".format(self.current_value))
 
             if not self.first_update_done:
                 self.slider.setSliderPosition(self.current_value)
                 self.slider.setValue(self.current_value)
-                self.target.setText("Tgt: " + str(self.current_value))
+                self.target.setText("Tgt: {:.2f}".format(self.current_value))
 
                 self.first_update_done = True
         except:
@@ -438,7 +439,7 @@ class EtherCATHandSynergyTrajectorySlider(ExtendedSynergySlider):
         """
         self.slider.setSliderPosition(self.current_value)
         self.slider.setValue(self.current_value)
-        self.target.setText("Tgt: " + str(self.current_value))
+        self.target.setText("Tgt: {:.2f}".format(self.current_value))
 
     def set_slider_behaviour(self):
         """

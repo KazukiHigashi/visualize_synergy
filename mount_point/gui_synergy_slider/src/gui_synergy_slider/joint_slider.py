@@ -20,12 +20,15 @@ import rospkg
 import rospy
 import math
 
+import csv
+
 from xml.etree import ElementTree as ET
 
 from qt_gui.plugin import Plugin
 from python_qt_binding import loadUi
 
-from QtCore import Qt
+from PyQt5.QtCore import pyqtSignal, Qt, QThread
+# from QtCore import Qt, QThread
 from QtWidgets import QWidget, QMessageBox
 
 from controller_manager_msgs.srv import ListControllers
@@ -41,15 +44,26 @@ from sr_robot_msgs.msg import sendupdate
 
 from gui_synergy_slider.sliders import JointController, Joint, EtherCATHandSlider, PrincipalComponent
 from gui_synergy_slider.sliders import EtherCATHandTrajectorySlider, EtherCATSelectionSlider, \
-    EtherCATHandSynergyTrajectorySlider
+    EtherCATHandSynergySlider
 from sr_utilities.hand_finder import HandFinder
 
 from synergy_utility import pca_utils
 from math import radians, degrees
+import numpy as np
+
+
+def _read_mapping(path=None):
+    if path is None:
+        path = rospkg.RosPack().get_path('sr_cyberglove_config') + "/mappings/GloveToHandMappings_generic"
+
+    with open(path) as f:
+        reader = csv.reader(f, delimiter=' ')
+        mapping_matrix = np.array([row for row in reader])
+    mapping_matrix = np.array(mapping_matrix[:, 1:], dtype='float')
+    return mapping_matrix # [:20, :]
 
 
 class GuiSynergySlider(Plugin):
-
     """
     A plugin to change the position along with a principal component axis of a synergy.
     """
@@ -73,8 +87,12 @@ class GuiSynergySlider(Plugin):
     synergy_types = {
         #  "synergy name":(index, max_pc_number)
         0: ("grasp", 10),
-        1: ("task", 10),
-        2: ("sub", 6)}
+        1: ("sub1", 3),
+        2: ("sub2", 6),
+        3: ("sub3", 6),
+        4: ("sub4", 6)}
+
+    posture_update = pyqtSignal()
 
     def __init__(self, context):
         super(GuiSynergySlider, self).__init__(context)
@@ -100,14 +118,17 @@ class GuiSynergySlider(Plugin):
         self.current_synergy_type = None
         self.current_pc_num = 1
         self.current_pca_object = None
+        self.selected_joints = None
         self.current_synergy_scores = []
+        self.current_sr_joints_target = []
 
         self.joint_position_controller_pub = dict()
 
         # to be used for calculating next trajectory reconstructed by the synergy
         self.synergy_posture_pub = rospy.Publisher('/cyberglove/calibrated/joint_states', JointState, queue_size=1)
-
         rospy.Subscriber("/srh/sendupdate", sendupdate, self._publish_remapped_postures_cb)
+
+        self.mapping_matrix = _read_mapping()
 
         # to be used by trajectory controller sliders
         self.trajectory_state_sub = []
@@ -123,13 +144,23 @@ class GuiSynergySlider(Plugin):
         self._widget.pcNumberCombo.currentIndexChanged.connect(
             self.on_pc_combo_index_changed)
 
+        self._widget.synergyVectorViewer.setFontPointSize(8)
+        self._widget.synergyVectorViewer.setFontFamily("DejaVu Sans Mono")
+
+        self.posture_update.connect(self._update_synergy_viewer)
+
         self._widget.synergyTypeCombo.addItem("grasp")
-        self._widget.synergyTypeCombo.addItem("task")
-        self._widget.synergyTypeCombo.addItem("sub")
+        self._widget.synergyTypeCombo.addItem("sub1")
+        self._widget.synergyTypeCombo.addItem("sub2")
+        self._widget.synergyTypeCombo.addItem("sub3")
+        self._widget.synergyTypeCombo.addItem("sub4")
+
+        self.text_box = self._widget.synergyVectorViewer
+        print self._widget.synergyVectorViewer.parent()
 
         self.hand_prefix = self._get_hand_prefix()
-        # print self.hand_prefix
-
+        print QThread.currentThreadId()
+        print "finish initialization on : {}".format(QThread.currentThreadId())
 
     def _get_hand_prefix(self):
         hand_finder = HandFinder()
@@ -159,11 +190,11 @@ class GuiSynergySlider(Plugin):
         current_synergy_index = self._widget.synergyTypeCombo.currentIndex()
         self.current_synergy_type = self.synergy_types[current_synergy_index][0]
         self._widget.pcNumberCombo.clear()
-        for i in range(1, self.synergy_types[current_synergy_index][1]+1, 1):
+        for i in range(1, self.synergy_types[current_synergy_index][1] + 1, 1):
             self._widget.pcNumberCombo.addItem(str(i))
 
     def on_pc_combo_index_changed(self):
-        self.current_pc_num = self._widget.pcNumberCombo.currentIndex()+1
+        self.current_pc_num = self._widget.pcNumberCombo.currentIndex() + 1
         self.on_reload_button_cicked_()
         pass
 
@@ -190,8 +221,10 @@ class GuiSynergySlider(Plugin):
         # self._widget.sliderReleaseCheckBox.setCheckState(Qt.Unchecked)
 
         self.load_new_synergy_sliders_()
-        #
+
         # self.load_new_sliders_()
+
+        self._update_synergy_viewer()
 
         self.pause_subscriber = False
 
@@ -226,7 +259,7 @@ class GuiSynergySlider(Plugin):
 
         self.sliders = []
 
-        if(self.selection_slider is not None):
+        if (self.selection_slider is not None):
             self._widget.horizontalLayout.removeWidget(self.selection_slider)
             self.selection_slider.close()
             self.selection_slider.deleteLater()
@@ -239,9 +272,9 @@ class GuiSynergySlider(Plugin):
             slider_ui_file = os.path.join(rospkg.RosPack().get_path('gui_synergy_slider'), 'uis', 'Slider.ui')
 
             try:
-                slider = EtherCATHandSynergyTrajectorySlider(pc, slider_ui_file, self, self._widget.scrollAreaWidgetContents)
+                slider = EtherCATHandSynergySlider(pc, slider_ui_file, self,
+                                                             self._widget.scrollAreaWidgetContents)
             except Exception, e:
-                print 'baka'
                 rospy.loginfo(e)
 
             if slider is not None:
@@ -312,7 +345,7 @@ class GuiSynergySlider(Plugin):
         Load the description from the param named in the edit as an ET element.
         Sets self._robot_description_xml_root to the element.
         """
-        name = "robot_description" # self._widget.robot_description_edit.text()
+        name = "robot_description"  # self._widget.robot_description_edit.text()
         self._robot_description_xml_root = None
         try:
             xml = rospy.get_param(name)
@@ -369,7 +402,25 @@ class GuiSynergySlider(Plugin):
     def _create_synergy(self, controllers):
         principal_components = []
         pca_resource_path = os.path.join(rospkg.RosPack().get_path('gui_synergy_slider'), 'resource', 'taxonomy')
-        synergy, postures = pca_utils.generate_toss_from_directory(pca_resource_path, joint_num=22)
+
+        synergy = None
+        postures = None
+        if self.current_synergy_type == "grasp":
+            self.selected_joints = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+            synergy, postures = pca_utils.generate_toss_from_directory(pca_resource_path, pc_num=22, joint_num=22)
+        elif "sub" in self.current_synergy_type:
+            if self.current_synergy_type == "sub1":
+                self.selected_joints = [0, 1, 2, 3]
+            elif self.current_synergy_type == "sub2":
+                self.selected_joints = [0, 1, 2, 3, 4, 5, 6, 10, 14, 18]
+            elif self.current_synergy_type == "sub3":
+                self.selected_joints = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 18]
+            elif self.current_synergy_type == "sub4":
+                self.selected_joints = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+            synergy, postures = pca_utils.generate_subsynergy_from_directory(pca_resource_path,
+                                                                             pc_num=len(self.selected_joints),
+                                                                             joint_num=22,
+                                                                             selected_joints=self.selected_joints)
         pc_score_range = pca_utils.principal_component_score_range(synergy, postures)
 
         self.synergy_score_change_sub = []
@@ -377,14 +428,51 @@ class GuiSynergySlider(Plugin):
         self.current_synergy_scores = [0] * self.current_pc_num
 
         print pc_score_range
-        for pc_num in range(1, self.current_pc_num+1):
-            principal_component = PrincipalComponent(num=pc_num, min=pc_score_range[pc_num][0], max=pc_score_range[pc_num][1], vector=synergy.components_[pc_num])
+        for pc_num in range(1, self.current_pc_num + 1):
+            principal_component = PrincipalComponent(num=pc_num, min=pc_score_range[pc_num-1][0],
+                                                     max=pc_score_range[pc_num-1][1], vector=synergy.components_[pc_num-1])
             principal_components.append(principal_component)
 
             self.synergy_score_change_sub.append(rospy.Subscriber("synergy_score_change/pc{}".format(pc_num), Float64,
-                                                                  self._publish_synergy_postures_cb, callback_args=pc_num))
-
+                                                                  self._publish_synergy_postures_cb,
+                                                                  callback_args=pc_num))
         return principal_components
+
+    def _update_synergy_viewer(self):
+        print "update synergy on : {}".format(QThread.currentThreadId())
+        self._widget.synergyVectorViewer.clear()
+        self._widget.synergyVectorViewer.insertPlainText(
+            pca_utils.print_synergy_vectors(vectors=self.current_pca_object.components_,
+                                            selected_joints=self.selected_joints,
+                                            pc_num=self.current_pc_num,
+                                            mean_posture=self.current_pca_object.mean_))
+
+        view = "\n---synergy description of SRH---\n"
+        print self.selected_joints
+        whole_joints_pca_components = np.zeros((len(self.selected_joints), 22))  # 22 is the number of joints of SRH
+        # Care of the calculation of subsynergy with selected joints spaces
+        for i, joint_idx in enumerate(self.selected_joints):
+            whole_joints_pca_components[:, joint_idx] = self.current_pca_object.components_[:, i]
+
+        mapped_synergy = np.dot(self.mapping_matrix.T, whole_joints_pca_components.T).T
+
+        print mapped_synergy
+
+        for joint in self.current_sr_joints_target:
+            view += "{:>8},".format(joint.joint_name)
+        view += '\n'
+        for i in range(self.current_pc_num):
+            for j in range(len(self.current_sr_joints_target)):
+                view += "{:>8.2f},".format(mapped_synergy[i][j])
+            view += "\n"
+
+        view += "\n\n---current joint state---\n"
+        for joint in self.current_sr_joints_target:
+            view += "{:>8},".format(joint.joint_name)
+        view += '\n'
+        for joint in self.current_sr_joints_target:
+            view += "{:>8.2f},".format(float(joint.joint_target))
+        self._widget.synergyVectorViewer.insertPlainText(view)
 
     def _create_joints(self, controllers):
         joints = []
@@ -472,9 +560,9 @@ class GuiSynergySlider(Plugin):
                         if controller_category == "position":
                             self.joint_position_controller_pub[joint_name] = \
                                 rospy.Publisher(joint.controller.name + "/command",
-                                Float64,
-                                queue_size=1,
-                                latch=True)
+                                                Float64,
+                                                queue_size=1,
+                                                latch=True)
 
                 else:
                     rospy.logwarn(
@@ -501,24 +589,27 @@ class GuiSynergySlider(Plugin):
                 cb(msg)
 
     def _publish_synergy_postures_cb(self, msg, pc_num):
-        self.current_synergy_scores[pc_num-1] = msg.data
+        self.current_synergy_scores[pc_num - 1] = msg.data
         next_posture = pca_utils.calculate_approximated_posture(mean_posture=self.current_pca_object.mean_,
                                                                 pc_vectors=self.current_pca_object.components_,
                                                                 scores=self.current_synergy_scores)
+        if "sub" in self.current_synergy_type:
+            all_joints = [0] * 22
+            for i, joint_num in enumerate(self.selected_joints):
+                all_joints[joint_num] = next_posture[i]
+            next_posture = all_joints
+
         pub_msg = JointState()
         pub_msg.position = next_posture
 
         self.synergy_posture_pub.publish(pub_msg)
 
     def _publish_remapped_postures_cb(self, msg):
+        print "publish posture on : {}".format(QThread.currentThreadId())
         pub_msg = Float64()
+        self.current_sr_joints_target = msg.sendupdate_list
         for joint in msg.sendupdate_list:
             pub_msg.data = radians(float(joint.joint_target))
             self.joint_position_controller_pub["rh_{}".format(joint.joint_name)].publish(pub_msg)
-
-
-
-
-
-
+        self.posture_update.emit()
 
